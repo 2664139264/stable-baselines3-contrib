@@ -124,7 +124,6 @@ class RecurrentPPO(OnPolicyAlgorithm):
                 spaces.MultiBinary,
             ),
         )
-
         self.batch_size = batch_size
         self.n_epochs = n_epochs
         self.clip_range = clip_range
