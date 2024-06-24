@@ -614,7 +614,7 @@ class RecurrentMultiInputActorCriticPolicy(RecurrentActorCriticPolicy):
 ##################################################################
 
 
-class AttentionActorCriticPolicy(ActorCriticPolicy):
+class GruActorCriticPolicy(ActorCriticPolicy):
 
     def __init__(
         self,
@@ -635,21 +635,13 @@ class AttentionActorCriticPolicy(ActorCriticPolicy):
         normalize_images: bool = True,
         optimizer_class: Type[th.optim.Optimizer] = th.optim.Adam,
         optimizer_kwargs: Optional[Dict[str, Any]] = None,
-        
-        
-        
-        
-        
-        
-        
-        
-        lstm_hidden_size: int = 256,
-        n_lstm_layers: int = 1,
-        shared_lstm: bool = False,
-        enable_critic_lstm: bool = True,
-        lstm_kwargs: Optional[Dict[str, Any]] = None,
+        gru_hidden_size: int = 256,
+        n_gru_layers: int = 1,
+        shared_gru: bool = False,
+        enable_critic_gru: bool = True,
+        gru_kwargs: Optional[Dict[str, Any]] = None,
     ):
-        self.lstm_output_dim = lstm_hidden_size
+        self.gru_output_dim = lstm_hidden_size
         super().__init__(
             observation_space,
             action_space,
@@ -670,41 +662,41 @@ class AttentionActorCriticPolicy(ActorCriticPolicy):
             optimizer_kwargs,
         )
 
-        self.lstm_kwargs = lstm_kwargs or {}
-        self.shared_lstm = shared_lstm
-        self.enable_critic_lstm = enable_critic_lstm
-        self.lstm_actor = nn.LSTM(
+        self.gru_kwargs = gru_kwargs or {}
+        self.shared_gru = shared_gru
+        self.enable_critic_gru = enable_critic_gru
+        self.gru_actor = nn.GRU(
             self.features_dim,
-            lstm_hidden_size,
-            num_layers=n_lstm_layers,
-            **self.lstm_kwargs,
+            gru_hidden_size,
+            num_layers=n_gru_layers,
+            **self.gru_kwargs,
         )
         # For the predict() method, to initialize hidden states
-        # (n_lstm_layers, batch_size, lstm_hidden_size)
-        self.lstm_hidden_state_shape = (n_lstm_layers, 1, lstm_hidden_size)
+        # (n_gru_layers, batch_size, gru_hidden_size)
+        self.gru_hidden_state_shape = (n_gru_layers, 1, gru_hidden_size)
         self.critic = None
-        self.lstm_critic = None
+        self.gru_critic = None
         assert not (
-            self.shared_lstm and self.enable_critic_lstm
-        ), "You must choose between shared LSTM, seperate or no LSTM for the critic."
+            self.shared_gru and self.enable_critic_gru
+        ), "You must choose between shared GRU, seperate or no GRU for the critic."
 
         assert not (
-            self.shared_lstm and not self.share_features_extractor
-        ), "If the features extractor is not shared, the LSTM cannot be shared."
+            self.shared_gru and not self.share_features_extractor
+        ), "If the features extractor is not shared, the GRU cannot be shared."
 
-        # No LSTM for the critic, we still need to convert
+        # No GRU for the critic, we still need to convert
         # output of features extractor to the correct size
         # (size of the output of the actor lstm)
-        if not (self.shared_lstm or self.enable_critic_lstm):
-            self.critic = nn.Linear(self.features_dim, lstm_hidden_size)
+        if not (self.shared_gru or self.enable_critic_gru):
+            self.critic = nn.Linear(self.features_dim, gru_hidden_size)
 
         # Use a separate LSTM for the critic
-        if self.enable_critic_lstm:
-            self.lstm_critic = nn.LSTM(
+        if self.enable_critic_gru:
+            self.gru_critic = nn.GRU(
                 self.features_dim,
-                lstm_hidden_size,
-                num_layers=n_lstm_layers,
-                **self.lstm_kwargs,
+                gru_hidden_size,
+                num_layers=n_gru_layers,
+                **self.gru_kwargs,
             )
 
         # Setup optimizer with initial learning rate
@@ -716,7 +708,7 @@ class AttentionActorCriticPolicy(ActorCriticPolicy):
         Part of the layers can be shared.
         """
         self.mlp_extractor = MlpExtractor(
-            self.lstm_output_dim,
+            self.gru_output_dim,
             net_arch=self.net_arch,
             activation_fn=self.activation_fn,
             device=self.device,
@@ -725,24 +717,24 @@ class AttentionActorCriticPolicy(ActorCriticPolicy):
     @staticmethod
     def _process_sequence(
         features: th.Tensor,
-        lstm_states: Tuple[th.Tensor, th.Tensor],
+        gru_states: th.Tensor,
         episode_starts: th.Tensor,
-        lstm: nn.LSTM,
+        gru: nn.GRU,
     ) -> Tuple[th.Tensor, th.Tensor]:
         """
-        Do a forward pass in the LSTM network.
+        Do a forward pass in the GRU network.
 
-        :param features: Input tensor
-        :param lstm_states: previous hidden and cell states of the LSTM, respectively
+        :param features: Input tensor.
+        :param gru_states: previous hidden states of the GRU.
         :param episode_starts: Indicates when a new episode starts,
-            in that case, we need to reset LSTM states.
-        :param lstm: LSTM object.
-        :return: LSTM output and updated LSTM states.
+            in that case, we need to reset GRU states.
+        :param gru: GRU object.
+        :return: GRU output and updated GRU states.
         """
-        # LSTM logic
+        # GRU logic
         # (sequence length, batch size, features dim)
         # (batch size = n_envs for data collection or n_seq when doing gradient update)
-        n_seq = lstm_states[0].shape[1]
+        n_seq = gru_states[0].shape[1]
         # Batch to sequence
         # (padded batch size, features_dim) -> (n_seq, max length, features_dim) -> (max length, n_seq, features_dim)
         # note: max length (max sequence length) is always 1 during data collection
@@ -752,31 +744,28 @@ class AttentionActorCriticPolicy(ActorCriticPolicy):
         # If we don't have to reset the state in the middle of a sequence
         # we can avoid the for loop, which speeds up things
         if th.all(episode_starts == 0.0):
-            lstm_output, lstm_states = lstm(features_sequence, lstm_states)
-            lstm_output = th.flatten(lstm_output.transpose(0, 1), start_dim=0, end_dim=1)
-            return lstm_output, lstm_states
+            gru_output, gru_states = gru(features_sequence, gru_states)
+            gru_output = th.flatten(gru_output.transpose(0, 1), start_dim=0, end_dim=1)
+            return gru_output, gru_states
 
-        lstm_output = []
+        gru_output = []
         # Iterate over the sequence
         for features, episode_start in zip_strict(features_sequence, episode_starts):
-            hidden, lstm_states = lstm(
-                features.unsqueeze(dim=0),
-                (
-                    # Reset the states at the beginning of a new episode
-                    (1.0 - episode_start).view(1, n_seq, 1) * lstm_states[0],
-                    (1.0 - episode_start).view(1, n_seq, 1) * lstm_states[1],
-                ),
+            hidden, gru_states = gru(
+                features.unsqueeze(dim=0),    
+                # Reset the states at the beginning of a new episode
+                (1.0 - episode_start).view(1, n_seq, 1) * gru_states
             )
-            lstm_output += [hidden]
+            gru_output.append(hidden)
         # Sequence to batch
-        # (sequence length, n_seq, lstm_out_dim) -> (batch_size, lstm_out_dim)
-        lstm_output = th.flatten(th.cat(lstm_output).transpose(0, 1), start_dim=0, end_dim=1)
-        return lstm_output, lstm_states
+        # (sequence length, n_seq, gru_out_dim) -> (batch_size, gru_out_dim)
+        gru_output = th.flatten(th.cat(gru_output).transpose(0, 1), start_dim=0, end_dim=1)
+        return gru_output, gru_states
 
     def forward(
         self,
         obs: th.Tensor,
-        lstm_states: RNNStates,
+        gru_states: RNNStates,
         episode_starts: th.Tensor,
         deterministic: bool = False,
     ) -> Tuple[th.Tensor, th.Tensor, th.Tensor, RNNStates]:
@@ -784,11 +773,11 @@ class AttentionActorCriticPolicy(ActorCriticPolicy):
         Forward pass in all the networks (actor and critic)
 
         :param obs: Observation. Observation
-        :param lstm_states: The last hidden and memory states for the LSTM.
+        :param gru_states: The last hidden states for the GRU.
         :param episode_starts: Whether the observations correspond to new episodes
-            or not (we reset the lstm states in that case).
+            or not (we reset the gru states in that case).
         :param deterministic: Whether to sample or use deterministic actions
-        :return: action, value and log probability of the action
+        :return: action, value, log probability of the action, RNNStates for pi feature and vf features.
         """
         # Preprocess the observation if needed
         features = self.extract_features(obs)
@@ -797,17 +786,17 @@ class AttentionActorCriticPolicy(ActorCriticPolicy):
         else:
             pi_features, vf_features = features
         # latent_pi, latent_vf = self.mlp_extractor(features)
-        latent_pi, lstm_states_pi = self._process_sequence(pi_features, lstm_states.pi, episode_starts, self.lstm_actor)
+        latent_pi, gru_states_pi = self._process_sequence(pi_features, gru_states.pi, episode_starts, self.gru_actor)
         if self.lstm_critic is not None:
-            latent_vf, lstm_states_vf = self._process_sequence(vf_features, lstm_states.vf, episode_starts, self.lstm_critic)
-        elif self.shared_lstm:
-            # Re-use LSTM features but do not backpropagate
+            latent_vf, gru_states_vf = self._process_sequence(vf_features, gru_states.vf, episode_starts, self.gru_critic)
+        elif self.shared_gru:
+            # Re-use GRU features but do not backpropagate
             latent_vf = latent_pi.detach()
-            lstm_states_vf = (lstm_states_pi[0].detach(), lstm_states_pi[1].detach())
+            gru_states_vf = (gru_states_pi[0].detach(), gru_states_pi[1].detach())
         else:
             # Critic only has a feedforward network
             latent_vf = self.critic(vf_features)
-            lstm_states_vf = lstm_states_pi
+            gru_states_vf = gru_states_pi
 
         latent_pi = self.mlp_extractor.forward_actor(latent_pi)
         latent_vf = self.mlp_extractor.forward_critic(latent_vf)
@@ -817,52 +806,52 @@ class AttentionActorCriticPolicy(ActorCriticPolicy):
         distribution = self._get_action_dist_from_latent(latent_pi)
         actions = distribution.get_actions(deterministic=deterministic)
         log_prob = distribution.log_prob(actions)
-        return actions, values, log_prob, RNNStates(lstm_states_pi, lstm_states_vf)
+        return actions, values, log_prob, RNNStates(gru_states_pi, gru_states_vf)
 
     def get_distribution(
         self,
         obs: th.Tensor,
-        lstm_states: Tuple[th.Tensor, th.Tensor],
+        gru_states: th.Tensor,
         episode_starts: th.Tensor,
     ) -> Tuple[Distribution, Tuple[th.Tensor, ...]]:
         """
         Get the current policy distribution given the observations.
 
         :param obs: Observation.
-        :param lstm_states: The last hidden and memory states for the LSTM.
+        :param gru_states: The last hidden states for the GRU.
         :param episode_starts: Whether the observations correspond to new episodes
             or not (we reset the lstm states in that case).
         :return: the action distribution and new hidden states.
         """
         # Call the method from the parent of the parent class
         features = super(ActorCriticPolicy, self).extract_features(obs, self.pi_features_extractor)
-        latent_pi, lstm_states = self._process_sequence(features, lstm_states, episode_starts, self.lstm_actor)
+        latent_pi, gru_states = self._process_sequence(features, gru_states, episode_starts, self.gru_actor)
         latent_pi = self.mlp_extractor.forward_actor(latent_pi)
-        return self._get_action_dist_from_latent(latent_pi), lstm_states
+        return self._get_action_dist_from_latent(latent_pi), gru_states
 
     def predict_values(
         self,
         obs: th.Tensor,
-        lstm_states: Tuple[th.Tensor, th.Tensor],
+        gru_states: th.Tensor,
         episode_starts: th.Tensor,
     ) -> th.Tensor:
         """
         Get the estimated values according to the current policy given the observations.
 
         :param obs: Observation.
-        :param lstm_states: The last hidden and memory states for the LSTM.
+        :param gru_states: The last hidden states for the GRU.
         :param episode_starts: Whether the observations correspond to new episodes
-            or not (we reset the lstm states in that case).
+            or not (we reset the gru states in that case).
         :return: the estimated values.
         """
         # Call the method from the parent of the parent class
         features = super(ActorCriticPolicy, self).extract_features(obs, self.vf_features_extractor)
 
-        if self.lstm_critic is not None:
-            latent_vf, lstm_states_vf = self._process_sequence(features, lstm_states, episode_starts, self.lstm_critic)
-        elif self.shared_lstm:
+        if self.gru_critic is not None:
+            latent_vf, gru_states_vf = self._process_sequence(features, gru_states, episode_starts, self.gru_critic)
+        elif self.shared_gru:
             # Use LSTM from the actor
-            latent_pi, _ = self._process_sequence(features, lstm_states, episode_starts, self.lstm_actor)
+            latent_pi, _ = self._process_sequence(features, gru_states, episode_starts, self.gru_actor)
             latent_vf = latent_pi.detach()
         else:
             latent_vf = self.critic(features)
@@ -871,7 +860,7 @@ class AttentionActorCriticPolicy(ActorCriticPolicy):
         return self.value_net(latent_vf)
 
     def evaluate_actions(
-        self, obs: th.Tensor, actions: th.Tensor, lstm_states: RNNStates, episode_starts: th.Tensor
+        self, obs: th.Tensor, actions: th.Tensor, gru_states: RNNStates, episode_starts: th.Tensor
     ) -> Tuple[th.Tensor, th.Tensor, th.Tensor]:
         """
         Evaluate actions according to the current policy,
@@ -879,9 +868,9 @@ class AttentionActorCriticPolicy(ActorCriticPolicy):
 
         :param obs: Observation.
         :param actions:
-        :param lstm_states: The last hidden and memory states for the LSTM.
+        :param gru_states: The last hidden states for the GRU.
         :param episode_starts: Whether the observations correspond to new episodes
-            or not (we reset the lstm states in that case).
+            or not (we reset the gru states in that case).
         :return: estimated value, log likelihood of taking those actions
             and entropy of the action distribution.
         """
@@ -891,10 +880,10 @@ class AttentionActorCriticPolicy(ActorCriticPolicy):
             pi_features = vf_features = features  # alias
         else:
             pi_features, vf_features = features
-        latent_pi, _ = self._process_sequence(pi_features, lstm_states.pi, episode_starts, self.lstm_actor)
-        if self.lstm_critic is not None:
-            latent_vf, _ = self._process_sequence(vf_features, lstm_states.vf, episode_starts, self.lstm_critic)
-        elif self.shared_lstm:
+        latent_pi, _ = self._process_sequence(pi_features, gru_states.pi, episode_starts, self.gru_actor)
+        if self.gru_critic is not None:
+            latent_vf, _ = self._process_sequence(vf_features, gru_states.vf, episode_starts, self.gru_critic)
+        elif self.shared_gru:
             latent_vf = latent_pi.detach()
         else:
             latent_vf = self.critic(vf_features)
@@ -910,40 +899,40 @@ class AttentionActorCriticPolicy(ActorCriticPolicy):
     def _predict(
         self,
         observation: th.Tensor,
-        lstm_states: Tuple[th.Tensor, th.Tensor],
+        gru_states: th.Tensor,
         episode_starts: th.Tensor,
         deterministic: bool = False,
-    ) -> Tuple[th.Tensor, Tuple[th.Tensor, ...]]:
+    ) -> Tuple[th.Tensor, th.Tensor]:
         """
         Get the action according to the policy for a given observation.
 
         :param observation:
-        :param lstm_states: The last hidden and memory states for the LSTM.
+        :param gru_states: The last hidden states for the GRU.
         :param episode_starts: Whether the observations correspond to new episodes
-            or not (we reset the lstm states in that case).
+            or not (we reset the gru states in that case).
         :param deterministic: Whether to use stochastic or deterministic actions
-        :return: Taken action according to the policy and hidden states of the RNN
+        :return: Taken action according to the policy and hidden states of the GRU
         """
-        distribution, lstm_states = self.get_distribution(observation, lstm_states, episode_starts)
-        return distribution.get_actions(deterministic=deterministic), lstm_states
+        distribution, gru_states = self.get_distribution(observation, gru_states, episode_starts)
+        return distribution.get_actions(deterministic=deterministic), gru_states
 
     def predict(
         self,
         observation: Union[np.ndarray, Dict[str, np.ndarray]],
-        state: Optional[Tuple[np.ndarray, ...]] = None,
+        gru_state: Optional[np.ndarray] = None,
         episode_start: Optional[np.ndarray] = None,
         deterministic: bool = False,
-    ) -> Tuple[np.ndarray, Optional[Tuple[np.ndarray, ...]]]:
+    ) -> Tuple[np.ndarray, Optional[np.ndarray]]:
         """
         Get the policy action from an observation (and optional hidden state).
         Includes sugar-coating to handle different observations (e.g. normalizing images).
 
         :param observation: the input observation
-        :param lstm_states: The last hidden and memory states for the LSTM.
-        :param episode_starts: Whether the observations correspond to new episodes
-            or not (we reset the lstm states in that case).
+        :param gru_state: The last hidden state for the GRU.
+        :param episode_start: Whether the observation correspond to new episode
+            or not (we reset the gru state in that case).
         :param deterministic: Whether or not to return deterministic actions.
-        :return: the model's action and the next hidden state
+        :return: the model's action and the next hidden state for the GRU.
             (used in recurrent policies)
         """
         # Switch to eval mode (this affects batch norm / dropout)
@@ -956,24 +945,21 @@ class AttentionActorCriticPolicy(ActorCriticPolicy):
         else:
             n_envs = observation.shape[0]
         # state : (n_layers, n_envs, dim)
-        if state is None:
+        if gru_state is None:
             # Initialize hidden states to zeros
-            state = np.concatenate([np.zeros(self.lstm_hidden_state_shape) for _ in range(n_envs)], axis=1)
-            state = (state, state)
+            gru_state = np.concatenate([np.zeros(self.gru_hidden_state_shape) for _ in range(n_envs)], axis=1)
 
         if episode_start is None:
             episode_start = np.array([False for _ in range(n_envs)])
 
         with th.no_grad():
             # Convert to PyTorch tensors
-            states = th.tensor(state[0], dtype=th.float32, device=self.device), th.tensor(
-                state[1], dtype=th.float32, device=self.device
-            )
+            gru_states = th.tensor(gru_state, dtype=th.float32, device=self.device)
             episode_starts = th.tensor(episode_start, dtype=th.float32, device=self.device)
-            actions, states = self._predict(
-                observation, lstm_states=states, episode_starts=episode_starts, deterministic=deterministic
+            actions, gru_states = self._predict(
+                observation, gru_states=gru_states, episode_starts=episode_starts, deterministic=deterministic
             )
-            states = (states[0].cpu().numpy(), states[1].cpu().numpy())
+            gru_states = gru_states.cpu().numpy()
 
         # Convert to numpy
         actions = actions.cpu().numpy()
@@ -991,6 +977,6 @@ class AttentionActorCriticPolicy(ActorCriticPolicy):
         if not vectorized_env:
             actions = actions.squeeze(axis=0)
 
-        return actions, states
+        return actions, gru_states
 
 
