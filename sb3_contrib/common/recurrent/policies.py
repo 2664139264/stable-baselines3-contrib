@@ -230,7 +230,7 @@ class RecurrentActorCriticPolicy(ActorCriticPolicy):
         # Preprocess the observation if needed
         features = self.extract_features(obs)
         if self.share_features_extractor:
-            pi_features = vf_features = features  # alis
+            pi_features = vf_features = features  # alias
         else:
             pi_features, vf_features = features
         # latent_pi, latent_vf = self.mlp_extractor(features)
