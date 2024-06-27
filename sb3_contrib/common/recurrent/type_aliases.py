@@ -20,7 +20,6 @@ class RecurrentRolloutBufferSamples(NamedTuple):
     episode_starts: th.Tensor
     mask: th.Tensor
 
-
 class RecurrentDictRolloutBufferSamples(NamedTuple):
     observations: TensorDict
     actions: th.Tensor
@@ -29,5 +28,22 @@ class RecurrentDictRolloutBufferSamples(NamedTuple):
     advantages: th.Tensor
     returns: th.Tensor
     lstm_states: RNNStates
+    episode_starts: th.Tensor
+    mask: th.Tensor
+
+
+
+
+
+###########################    
+    
+class GruRolloutBufferSamples(NamedTuple):
+    observations: th.Tensor
+    actions: th.Tensor
+    old_values: th.Tensor
+    old_log_prob: th.Tensor
+    advantages: th.Tensor
+    returns: th.Tensor
+    gru_states: RNNStates
     episode_starts: th.Tensor
     mask: th.Tensor

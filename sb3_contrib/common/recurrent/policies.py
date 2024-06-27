@@ -641,7 +641,7 @@ class GruActorCriticPolicy(ActorCriticPolicy):
         enable_critic_gru: bool = True,
         gru_kwargs: Optional[Dict[str, Any]] = None,
     ):
-        self.gru_output_dim = lstm_hidden_size
+        self.gru_output_dim = gru_hidden_size
         super().__init__(
             observation_space,
             action_space,
@@ -734,11 +734,11 @@ class GruActorCriticPolicy(ActorCriticPolicy):
         # GRU logic
         # (sequence length, batch size, features dim)
         # (batch size = n_envs for data collection or n_seq when doing gradient update)
-        n_seq = gru_states[0].shape[1]
+        n_seq = gru_states.shape[1]
         # Batch to sequence
         # (padded batch size, features_dim) -> (n_seq, max length, features_dim) -> (max length, n_seq, features_dim)
         # note: max length (max sequence length) is always 1 during data collection
-        features_sequence = features.reshape((n_seq, -1, lstm.input_size)).swapaxes(0, 1)
+        features_sequence = features.reshape((n_seq, -1, gru.input_size)).swapaxes(0, 1)
         episode_starts = episode_starts.reshape((n_seq, -1)).swapaxes(0, 1)
 
         # If we don't have to reset the state in the middle of a sequence
@@ -787,12 +787,12 @@ class GruActorCriticPolicy(ActorCriticPolicy):
             pi_features, vf_features = features
         # latent_pi, latent_vf = self.mlp_extractor(features)
         latent_pi, gru_states_pi = self._process_sequence(pi_features, gru_states.pi, episode_starts, self.gru_actor)
-        if self.lstm_critic is not None:
+        if self.gru_critic is not None:
             latent_vf, gru_states_vf = self._process_sequence(vf_features, gru_states.vf, episode_starts, self.gru_critic)
         elif self.shared_gru:
             # Re-use GRU features but do not backpropagate
             latent_vf = latent_pi.detach()
-            gru_states_vf = (gru_states_pi[0].detach(), gru_states_pi[1].detach())
+            gru_states_vf = gru_states_pi.detach()
         else:
             # Critic only has a feedforward network
             latent_vf = self.critic(vf_features)
@@ -848,7 +848,7 @@ class GruActorCriticPolicy(ActorCriticPolicy):
         features = super(ActorCriticPolicy, self).extract_features(obs, self.vf_features_extractor)
 
         if self.gru_critic is not None:
-            latent_vf, gru_states_vf = self._process_sequence(features, gru_states, episode_starts, self.gru_critic)
+            latent_vf, _ = self._process_sequence(features, gru_states, episode_starts, self.gru_critic)
         elif self.shared_gru:
             # Use LSTM from the actor
             latent_pi, _ = self._process_sequence(features, gru_states, episode_starts, self.gru_actor)
